@@ -14,7 +14,9 @@ import java.util.Set;
 @Entity
 @Table(name = "quotes")
 @Getter
-@Setter @NoArgsConstructor
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
 public class Quote {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
