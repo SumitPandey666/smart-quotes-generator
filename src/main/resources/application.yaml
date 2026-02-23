@@ -8,7 +8,7 @@ spring:
 
   cloud:
     vault:
-      uri: http://127.0.0.1:8200
+      uri: ${VAULT_ADDR} # Passed via environment variable
       scheme: http
       token: ${VAULT_TOKEN} # Passed via environment variable
       kv:
@@ -28,7 +28,7 @@ spring:
   jpa:
     hibernate:
       # strictly 'validate' because Liquibase is managing our schema
-      ddl-auto: validate
+      ddl-auto: none
     show-sql: true
     properties:
       hibernate:
@@ -37,7 +37,7 @@ spring:
   # Liquibase configuration
   liquibase:
     enabled: true
-    change-log: classpath:db/changelog/db.changelog-master.yaml
+    change-log: classpath:db/db.changelog-master.yaml
 
   # Redis configuration for our caching and randomizer pool
   data:
@@ -51,3 +51,7 @@ management:
     web:
       exposure:
         include: health, info, metrics
+
+#logging:
+#  level:
+#    liquibase: DEBUG
