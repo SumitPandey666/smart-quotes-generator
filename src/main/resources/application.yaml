@@ -1,3 +1,53 @@
 spring:
   application:
     name: quote-service
+
+  # Instructs Spring Boot to fetch configuration from Vault before starting
+  config:
+    import: vault://
+
+  cloud:
+    vault:
+      uri: http://127.0.0.1:8200
+      scheme: http
+      token: ${VAULT_TOKEN} # Passed via environment variable
+      kv:
+        enabled: true
+        backend: secret
+        default-context: db
+
+  # Database configuration
+  datasource:
+    url: jdbc:mysql://localhost:3306/smartQuotesDB?allowMultiQueries=true
+    # Spring will automatically inject these from the Vault 'secret/db' path
+    username: ${spring.datasource.username}
+    password: ${spring.datasource.password}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+  # JPA / Hibernate settings
+  jpa:
+    hibernate:
+      # strictly 'validate' because Liquibase is managing our schema
+      ddl-auto: validate
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+
+  # Liquibase configuration
+  liquibase:
+    enabled: true
+    change-log: classpath:db/changelog/db.changelog-master.yaml
+
+  # Redis configuration for our caching and randomizer pool
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
+# Exposing Actuator endpoints for health checks
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, metrics
