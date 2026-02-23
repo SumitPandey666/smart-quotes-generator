@@ -12,7 +12,9 @@ import java.util.HashSet;
 import java.util.Set;
 
 @Entity
-@Table(name = "quotes")
+@Table(name = "quotes", indexes = {
+        @Index(name = "idx_quote_author", columnList = "author_id")
+})
 @Getter
 @Setter
 @NoArgsConstructor
@@ -41,4 +43,12 @@ public class Quote {
     @CreationTimestamp
     @Column(updatable = false)
     private LocalDateTime createdAt;
+
+    public void addTag(Tag tag) {
+        this.tags.add(tag);
+    }
+
+    public void removeTag(Tag tag) {
+        this.tags.remove(tag);
+    }
 }
