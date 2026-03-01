@@ -1,8 +1,10 @@
 package com.smartquotes.quoteservice.service;
 
+import com.smartquotes.quoteservice.annotation.TrackExecutionTime;
 import com.smartquotes.quoteservice.dto.QuoteResponse;
 import com.smartquotes.quoteservice.entity.Quote;
 import com.smartquotes.quoteservice.entity.Tag;
+import com.smartquotes.quoteservice.exception.ResourceNotFoundException;
 import com.smartquotes.quoteservice.repository.QuoteRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -12,7 +14,7 @@ import org.springframework.transaction.annotation.Transactional;
 import com.smartquotes.quoteservice.dto.InteractionRequest;
 import com.smartquotes.quoteservice.enums.InteractionType;
 import org.springframework.data.domain.PageRequest;
-
+import org.springframework.data.domain.Page;
 
 import java.time.Duration;
 import java.util.Set;
@@ -27,26 +29,26 @@ public class QuoteService {
 
     private final QuoteRepository quoteRepository;
     private final RedisTemplate<String, Long> redisTemplate;
-    private static final String REDIS_USER_SEEN_PREFIX = "user:seen:";
 
+    private static final String REDIS_USER_SEEN_PREFIX = "user:seen:";
     private static final String REDIS_RANDOM_POOL_KEY = "quote:random_pool";
 
     @Transactional(readOnly = true)
     public QuoteResponse getRandomQuote() {
-        // 1. Pop an ID instantly from the Redis Queue in O(1) time
-        Long quoteId = redisTemplate.opsForList().leftPop(REDIS_RANDOM_POOL_KEY);
+        Long poppedId = redisTemplate.opsForList().leftPop(REDIS_RANDOM_POOL_KEY);
 
-        if (quoteId == null) {
+        // FAANG Fix 1: Effectively final lambda variable & OOM protection
+        Long finalQuoteId;
+        if (poppedId == null) {
             log.warn("Redis pool is empty! Falling back to database.");
-            // Fallback: Just grabbing the first ID we can find to prevent a crash
-            quoteId = quoteRepository.findAll().stream().findFirst().orElseThrow().getId();
+            finalQuoteId = quoteRepository.findFirstByOrderByIdAsc().getId();
+        } else {
+            finalQuoteId = poppedId;
         }
 
-        // 2. Fetch the actual Quote entity by Primary Key (Extremely fast)
-        Quote quote = quoteRepository.findById(quoteId)
-                .orElseThrow(() -> new RuntimeException("Quote not found for ID "));
+        Quote quote = quoteRepository.findById(finalQuoteId)
+                .orElseThrow(() -> new ResourceNotFoundException("Quote not found for ID " + finalQuoteId));
 
-        // 3. Map to DTO
         return mapToResponse(quote);
     }
 
@@ -63,9 +65,9 @@ public class QuoteService {
         );
     }
 
+    @TrackExecutionTime
     @Transactional(readOnly = true)
     public QuoteResponse processInteraction(String userId, Long quoteId, InteractionRequest request) {
-        // 1. Mark the current quote as seen so we never return it again
         markQuoteAsSeen(userId, quoteId);
 
         if (request.interactionType() == InteractionType.DISLIKES) {
@@ -81,14 +83,20 @@ public class QuoteService {
             return getUnseenRandomQuote(userId);
         }
 
-        // 2. Fetch up to 100 candidate quotes to give us a buffer for filtered ones
-        List<Quote> candidates = quoteRepository.findCandidateQuotes(
+        // FAANG Fix 2: Two-Step Fetch to kill N+1 Problem
+        Page<Long> candidateIdPage = quoteRepository.findCandidateQuoteIds(
                 likedQuote.getTags(),
                 quoteId,
                 PageRequest.of(0, 100)
-        ).getContent();
+        );
 
-        // 3. The Filter Bubble Breaker: Remove candidates the user has already seen today
+        if (candidateIdPage.isEmpty()) {
+            return getUnseenRandomQuote(userId);
+        }
+
+        // Fetch everything safely in one shot
+        List<Quote> candidates = quoteRepository.findQuotesWithTagsAndAuthor(candidateIdPage.getContent());
+
         List<Quote> unseenCandidates = candidates.stream()
                 .filter(candidate -> !hasUserSeenQuote(userId, candidate.getId()))
                 .toList();
@@ -98,7 +106,6 @@ public class QuoteService {
             return getUnseenRandomQuote(userId);
         }
 
-        // 4. Find the best match from the UNSEEN candidates
         Quote bestMatch = null;
         double highestScore = -1.0;
 
@@ -111,25 +118,17 @@ public class QuoteService {
             }
         }
 
-        // Mark the recommended quote as seen before sending it back
         markQuoteAsSeen(userId, bestMatch.getId());
-
         log.info("Found similar unseen quote {} with Jaccard score: {}", bestMatch.getId(), highestScore);
         return mapToResponse(bestMatch);
     }
 
-    /**
-     * The core Data Structures & Algorithms (DSA) logic.
-     * Calculates the Jaccard Similarity index between two sets of tags.
-     */
     private double calculateJaccardSimilarity(Set<Tag> setA, Set<Tag> setB) {
         if (setA.isEmpty() && setB.isEmpty()) return 0.0;
 
-        // Intersection: Tags present in BOTH sets
         Set<Tag> intersection = new HashSet<>(setA);
         intersection.retainAll(setB);
 
-        // Union: All unique tags across BOTH sets
         Set<Tag> union = new HashSet<>(setA);
         union.addAll(setB);
 
@@ -139,7 +138,6 @@ public class QuoteService {
     private void markQuoteAsSeen(String userId, Long quoteId) {
         String key = REDIS_USER_SEEN_PREFIX + userId;
         redisTemplate.opsForSet().add(key, quoteId);
-        // Reset the 24-hour expiration every time they interact
         redisTemplate.expire(key, Duration.ofHours(24));
     }
 
@@ -149,26 +147,21 @@ public class QuoteService {
     }
 
     private QuoteResponse getUnseenRandomQuote(String userId) {
-        int maxAttempts = 5; // Prevent infinite loops if the pool is heavily exhausted
+        int maxAttempts = 5;
 
         for (int i = 0; i < maxAttempts; i++) {
             Long randomId = redisTemplate.opsForList().leftPop(REDIS_RANDOM_POOL_KEY);
-
-            if (randomId == null) {
-                break; // Pool is empty, break out and use DB fallback
-            }
+            if (randomId == null) break;
 
             if (!hasUserSeenQuote(userId, randomId)) {
                 markQuoteAsSeen(userId, randomId);
                 Quote quote = quoteRepository.findById(randomId).orElseThrow();
                 return mapToResponse(quote);
             }
-            // If seen, the loop continues and pops another one
         }
 
-        // Ultimate fallback if Redis pool is empty or user has seen everything in the pool
         log.warn("Failed to find unseen quote in Redis pool. Hitting DB fallback.");
-        Quote quote = quoteRepository.findAll().stream().findFirst().orElseThrow();
+        Quote quote = quoteRepository.findFirstByOrderByIdAsc(); // <-- FAANG Fix 3: OOM protection
         markQuoteAsSeen(userId, quote.getId());
         return mapToResponse(quote);
     }
