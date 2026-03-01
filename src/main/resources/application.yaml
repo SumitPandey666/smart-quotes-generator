@@ -52,6 +52,12 @@ management:
       exposure:
         include: health, info, metrics
 
+  jpa:
+    properties:
+      hibernate:
+        jdbc:
+          batch_size: 1000
+          order_inserts: true
 #logging:
 #  level:
 #    liquibase: DEBUG
