@@ -1,0 +1,23 @@
+1. The Mathematics: Jaccard Similarity
+When a user "Likes" a quote, we want to find the next quote that feels mathematically "closest"
+to it based on shared tags.
+
+We will use the Jaccard Similarity Index.
+It measures the similarity between two sets (Set A and Set B).
+
+The similarity score is the number of shared tags (the intersection) divided by the total number
+of unique tags across both quotes (the union).
+
+Score = 0.0: They have absolutely no tags in common.
+Score = 1.0: They have the exact same tags.
+
+If a user likes a quote with the tag "Philosophy", we shouldn't scan all 500,000 quotes in memory.
+We need the database to quickly give us a small candidate pool (e.g., 50 quotes) that share at least
+one tag.
+
+There is a classic Kaprekar’s constant scenario for recommendation engines, where the algorithm gets
+trapped oscillating between the same local maxima.
+--> To fix this, we need to introduce a "Seen History".
+We don't want users to see the same quote twice in the same day,
+a relational database is too slow for this constant read/write validation.
+This is a perfect use case for Redis Sets with a 24-hour Time-To-Live (TTL).
